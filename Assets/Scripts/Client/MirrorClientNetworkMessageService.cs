@@ -8,19 +8,46 @@ namespace NetworkMessages.Client
 {
     public sealed class MirrorClientNetworkMessageService : IClientNetworkMessageService
     {
-        private readonly Dictionary<ushort, Action> _localHandlerCleanups = new();
+        private readonly Dictionary<ushort, Action> _handlerCleanups = new();
 
+        private readonly HashSet<ushort> _activeSubscriptions = new();
+
+        private readonly HashSet<ushort> _confirmedSubscriptions = new();
+
+        private bool _ackHandlerRegistered;
         public void Subscribe<TMessage>(Action<TMessage> handler)
             where TMessage : struct, NetworkMessage
         {
             if (handler == null)
                 throw new ArgumentNullException(nameof(handler));
 
+            RegisterSubscriptionConfirmedHandler();
+
             ushort messageTypeId = NetworkMessageId<TMessage>.Id;
 
-            NetworkClient.ReplaceHandler(handler);
+            if (!_handlerCleanups.ContainsKey(messageTypeId))
+            {
+                NetworkClient.RegisterHandler<TMessage>(msg =>
+                {
+                    if (_activeSubscriptions.Contains(messageTypeId) &&
+                        _confirmedSubscriptions.Contains(messageTypeId))
+                    {
+                        handler(msg);
+                    }
+                    else
+                    {
+                        Debug.LogWarning(
+                            $"Ignored {typeof(TMessage).Name} (not confirmed yet), id={messageTypeId}");
+                    }
+                });
 
-            _localHandlerCleanups[messageTypeId] = () => { NetworkClient.UnregisterHandler<TMessage>(); };
+                _handlerCleanups[messageTypeId] = () =>
+                {
+                    NetworkClient.UnregisterHandler<TMessage>();
+                };
+            }
+
+            _activeSubscriptions.Add(messageTypeId);
 
             if (NetworkClient.isConnected)
             {
@@ -33,7 +60,7 @@ namespace NetworkMessages.Client
             }
             else
             {
-                Debug.LogWarning($"Cannot subscribe to {typeof(TMessage).Name}: client is not connected.");
+                Debug.LogWarning($"Cannot subscribe to {typeof(TMessage).Name}: client not connected.");
             }
         }
 
@@ -42,8 +69,8 @@ namespace NetworkMessages.Client
         {
             ushort messageTypeId = NetworkMessageId<TMessage>.Id;
 
-            NetworkClient.UnregisterHandler<TMessage>();
-            _localHandlerCleanups.Remove(messageTypeId);
+            _activeSubscriptions.Remove(messageTypeId);
+            _confirmedSubscriptions.Remove(messageTypeId);
 
             if (NetworkClient.isConnected)
             {
@@ -58,14 +85,30 @@ namespace NetworkMessages.Client
 
         public void ClearLocalHandlers()
         {
-            foreach (Action cleanup in _localHandlerCleanups.Values)
+            foreach (var cleanup in _handlerCleanups.Values)
             {
                 cleanup.Invoke();
             }
 
-            _localHandlerCleanups.Clear();
+            _handlerCleanups.Clear();
+            _activeSubscriptions.Clear();
+            _confirmedSubscriptions.Clear();
 
             Debug.Log("Client local network message handlers cleared.");
+        }
+        private void RegisterSubscriptionConfirmedHandler()
+        {
+            if (_ackHandlerRegistered)
+                return;
+
+            _ackHandlerRegistered = true;
+
+            NetworkClient.RegisterHandler<SubscriptionConfirmedMessage>(msg =>
+            {
+                _confirmedSubscriptions.Add(msg.MessageTypeId);
+
+                Debug.Log($"Subscription confirmed for id={msg.MessageTypeId}");
+            });
         }
     }
 }

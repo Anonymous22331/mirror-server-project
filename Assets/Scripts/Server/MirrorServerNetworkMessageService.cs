@@ -90,6 +90,12 @@ namespace NetworkMessages.Server
 
             Debug.Log($"Conn={connection.connectionId} subscribed to messageId={message.MessageTypeId}");
 
+            connection.Send(new SubscriptionConfirmedMessage
+                {
+                    MessageTypeId = message.MessageTypeId
+                });
+
+            
             ClientSubscribed?.Invoke(connection, message.MessageTypeId);
         }
 
